@@ -12,7 +12,7 @@ const origin = process.env.PUBLIC_ORIGIN ?? 'http://localhost';
 const key = readFileSync(process.env.JWT_PUBLIC_KEY, 'utf8');
 app.disable('x-powered-by');
 app.use(helmet({ hsts: process.env.COOKIE_SECURE === 'true' ? { maxAge: 31536000, includeSubDomains: true } : false, contentSecurityPolicy: { directives: { defaultSrc: ["'self'"], scriptSrc: ["'self'"], styleSrc: ["'self'"], imgSrc: ["'self'", 'data:'], connectSrc: ["'self'", origin.replace(/^http/, 'ws'), origin], objectSrc: ["'none'"], frameAncestors: ["'none'"], baseUri: ["'self'"] } } }));
-app.use(express.static('public', { index: 'index.html', maxAge: '1h' }));
+app.use(express.static('public', { index: 'index.html', maxAge: '1h', setHeaders(res, filePath) { if (filePath.endsWith('.html')) res.setHeader('Cache-Control', 'no-cache'); } }));
 app.get('/health', (_req, res) => res.json({ status: 'ok' }));
 const httpServer = createServer(app);
 const gameServer = new Server({ transport: new WebSocketTransport({ server: httpServer, maxPayload: 8192 }) });
@@ -27,11 +27,16 @@ class GameRoom extends Room {
     this.onMessage('move', (client, data) => {
       const now = Date.now();
       const meta = client.userData;
+      if (!data || typeof data !== 'object' || !Number.isFinite(data.dx) || !Number.isFinite(data.dz) || Math.abs(data.dx) > 1 || Math.abs(data.dz) > 1) return;
       if (now - meta.lastMove < 50) return;
+      const elapsed = Math.min(now - meta.lastMove, 100) / 1000;
       meta.lastMove = now;
-      if (!data || typeof data !== 'object' || !['x','y','z'].every(k => Number.isFinite(data[k]) && Math.abs(data[k]) <= 1000)) return;
-      const player = this.state.players[client.sessionId];
-      if (player) { player.x = data.x; player.y = data.y; player.z = data.z; }
+      const player = this.state.players.get(client.sessionId);
+      if (player) {
+        const speed = 5;
+        player.x = Math.max(-14, Math.min(14, player.x + data.dx * speed * elapsed));
+        player.z = Math.max(-14, Math.min(14, player.z + data.dz * speed * elapsed));
+      }
     });
     this.onMessage('chat', (client, data) => {
       const meta = client.userData;
@@ -41,8 +46,8 @@ class GameRoom extends Room {
       this.broadcast('chat', { username: meta.username, message: data.message });
     });
   }
-  onJoin(client, _options, auth) { client.userData = { username: auth.username, lastMove: 0, lastChat: 0 }; this.state.players[client.sessionId] = new Player(client.sessionId, auth.username); }
-  onLeave(client) { delete this.state.players[client.sessionId]; }
+  onJoin(client, _options, auth) { client.userData = { username: auth.username, lastMove: Date.now(), lastChat: 0 }; this.state.players.set(client.sessionId, new Player(client.sessionId, auth.username)); }
+  onLeave(client) { this.state.players.delete(client.sessionId); }
   static onAuth(_token, _options, context) {
     if (context.headers.origin !== origin) throw new Error('Unauthorized');
     const cookie = context.headers.cookie ?? '';
