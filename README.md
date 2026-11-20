@@ -35,6 +35,8 @@ docker-compose.yml      Four-service local deployment
 
 ## Security checks
 
+Run `npm test` to exercise client game-session behavior: unauthenticated session starts are rejected, logout disconnects the client without stopping the server, and repeated login reuses one room so one chat submission is sent once.
+
 After `docker compose up --build`, run `npm run security-check` from the repository root. The script exercises auth headers, registration/login, parameterized SQL behavior, XSS payload handling, CSRF enforcement, origin rejection, JWT rejection, rate limiting, cookie authentication, size limits, and WebSocket authentication/origin checks against the running local stack. It needs Node.js 20+ on the host. The checks create disposable test accounts in the configured database; stop/reset the local stack with `docker compose down -v` if you want to remove all local data.
 
 These checks cover the local development configuration, not a production penetration test. Production deployment still requires HTTPS, protected environment secrets, key backup/rotation, monitoring, and review of the exact deployment origin and CSP needs. The sample game is a starter: gameplay rules and persistence are not included.

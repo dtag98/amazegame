@@ -1,5 +1,6 @@
 {
   "name": "cse312-multiplayer-game",
   "private": true,
-  "scripts": { "security-check": "node scripts/security-check.mjs" }
+  "type": "module",
+  "scripts": { "test": "node --test", "security-check": "node scripts/security-check.mjs" }
 }
