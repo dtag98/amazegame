@@ -1,5 +1,6 @@
 import { existsSync, writeFileSync, chmodSync } from 'node:fs';
 import { generateKeyPairSync } from 'node:crypto';
+if (process.env.JWT_SECRET) process.exit(0);
 const privatePath = process.env.JWT_PRIVATE_KEY ?? '/run/keys/private.pem';
 const publicPath = process.env.JWT_PUBLIC_KEY ?? '/run/keys/public.pem';
 if (!existsSync(privatePath) || !existsSync(publicPath)) {

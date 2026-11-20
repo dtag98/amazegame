@@ -11,6 +11,12 @@ A small, modular multiplayer browser game starter. The browser client uses Vite,
 
 The first authentication service startup generates an RSA key pair in the Compose `jwt-keys` volume. The game server waits for the auth health check and verifies tokens using only the public key. For HTTPS deployment, terminate TLS at Nginx, set `COOKIE_SECURE=true`, configure `PUBLIC_ORIGIN=https://your-host`, and provide valid TLS certificates and Nginx TLS configuration. HSTS is disabled for local HTTP and enabled when `COOKIE_SECURE=true`.
 
+## Deploy to Render
+
+Use the Blueprint in `render.yaml` from Render's **New + > Blueprint** flow. It creates the private auth service, the public game service (which proxies `/api/*` to auth), a PostgreSQL database, and a generated shared JWT secret. The deployment uses the same game URL for the browser origin and secure cookies; no values from `.env` need to be copied to Render. The Compose deployment continues to use its local RSA key volume.
+
+The Blueprint uses paid plans for the private auth service and persistent database. The game service uses Render's free plan and can spin down while idle; choose a paid web plan in `render.yaml` if you need it continuously available for WebSocket sessions. Keep `.env` local and do not commit it.
+
 ## Layout
 
 ```text

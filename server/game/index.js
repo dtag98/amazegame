@@ -2,16 +2,28 @@ import express from 'express';
 import helmet from 'helmet';
 import jwt from 'jsonwebtoken';
 import { readFileSync } from 'node:fs';
-import { createServer } from 'node:http';
+import { createServer, request as proxyRequest } from 'node:http';
 import { Server, Room } from '@colyseus/core';
 import { Schema, MapSchema, defineTypes } from '@colyseus/schema';
 import { WebSocketTransport } from '@colyseus/ws-transport';
 
 const app = express();
 const origin = process.env.PUBLIC_ORIGIN ?? 'http://localhost';
-const key = readFileSync(process.env.JWT_PUBLIC_KEY, 'utf8');
+const jwtSecret = process.env.JWT_SECRET;
+const jwtAlgorithm = jwtSecret ? 'HS256' : 'RS256';
+const verificationKey = jwtSecret ?? readFileSync(process.env.JWT_PUBLIC_KEY, 'utf8');
 app.disable('x-powered-by');
 app.use(helmet({ hsts: process.env.COOKIE_SECURE === 'true' ? { maxAge: 31536000, includeSubDomains: true } : false, contentSecurityPolicy: { directives: { defaultSrc: ["'self'"], scriptSrc: ["'self'"], styleSrc: ["'self'"], imgSrc: ["'self'", 'data:'], connectSrc: ["'self'", origin.replace(/^http/, 'ws'), origin], objectSrc: ["'none'"], frameAncestors: ["'none'"], baseUri: ["'self'"] } } }));
+const authAddress = process.env.AUTH_SERVICE_HOSTPORT ?? 'localhost:3001';
+app.use('/api', (req, res) => {
+  if (req.method !== 'GET' && req.headers.origin !== origin) return res.status(403).json({ error: 'Forbidden' });
+  const upstream = proxyRequest({ hostname: authAddress.split(':')[0], port: Number(authAddress.split(':')[1] ?? 3001), path: req.url, method: req.method, headers: { ...req.headers, host: authAddress } }, response => {
+    res.writeHead(response.statusCode ?? 502, response.headers);
+    response.pipe(res);
+  });
+  upstream.on('error', () => { if (!res.headersSent) res.status(502).json({ error: 'Authentication service unavailable' }); else res.destroy(); });
+  req.pipe(upstream);
+});
 app.use(express.static('public', { index: 'index.html', maxAge: '1h', setHeaders(res, filePath) { if (filePath.endsWith('.html')) res.setHeader('Cache-Control', 'no-cache'); } }));
 app.get('/health', (_req, res) => res.json({ status: 'ok' }));
 const httpServer = createServer(app);
@@ -53,7 +65,7 @@ class GameRoom extends Room {
     const cookie = context.headers.cookie ?? '';
     const token = cookie.split(';').map(s => s.trim()).find(s => s.startsWith('session='))?.slice(8);
     if (!token) throw new Error('Unauthorized');
-    try { return jwt.verify(decodeURIComponent(token), key, { algorithms: ['RS256'], issuer: 'amazegame-auth', audience: 'amazegame' }); }
+    try { return jwt.verify(decodeURIComponent(token), verificationKey, { algorithms: [jwtAlgorithm], issuer: 'amazegame-auth', audience: 'amazegame' }); }
     catch { throw new Error('Unauthorized'); }
   }
 }

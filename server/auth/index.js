@@ -14,7 +14,9 @@ const origin = process.env.PUBLIC_ORIGIN ?? 'http://localhost';
 const secure = process.env.COOKIE_SECURE === 'true';
 const cookieOptions = { httpOnly: true, secure, sameSite: 'lax', path: '/' };
 const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL, max: 10 });
-const privateKey = readFileSync(process.env.JWT_PRIVATE_KEY, 'utf8');
+const jwtSecret = process.env.JWT_SECRET;
+const jwtAlgorithm = jwtSecret ? 'HS256' : 'RS256';
+const privateKey = jwtSecret ?? readFileSync(process.env.JWT_PRIVATE_KEY, 'utf8');
 app.disable('x-powered-by');
 app.use(helmet({ hsts: secure ? { maxAge: 31536000, includeSubDomains: true } : false, contentSecurityPolicy: { directives: { defaultSrc: ["'self'"], scriptSrc: ["'self'"], styleSrc: ["'self'"], imgSrc: ["'self'", 'data:'], connectSrc: ["'self'", origin.replace(/^http/, 'ws')], objectSrc: ["'none'"], frameAncestors: ["'none'"], baseUri: ["'self'"] } } }));
 app.use(cors({ origin, credentials: true, methods: ['GET', 'POST'], allowedHeaders: ['Content-Type', 'X-CSRF-Token'] }));
@@ -29,7 +31,7 @@ function csrfValid(req) {
   return timingSafeEqual(Buffer.from(cookie), Buffer.from(header));
 }
 function stateGuard(req, res, next) {
-  if (req.get('origin') !== origin) return res.status(403).json({ error: 'Forbidden' });
+  if (process.env.TRUST_PROXY_ORIGIN !== 'true' && req.get('origin') !== origin) return res.status(403).json({ error: 'Forbidden' });
   if (!csrfValid(req)) return res.status(403).json({ error: 'CSRF validation failed' });
   next();
 }
@@ -65,7 +67,7 @@ app.post('/login', stateGuard, authLimiter, validateCredentials, async (req, res
     const account = result.rows[0];
     const ok = await bcrypt.compare(req.body.password, account?.password_hash ?? '$2a$12$C6UzMDM.H6dfI/f/IKcEe.9a5y4m5fBT6U3NnbHAg8oXw4yAfM0aK');
     if (!account || !ok) return res.status(401).json({ error: 'Invalid username or password' });
-    const token = jwt.sign({ sub: account.id, username: account.username }, privateKey, { algorithm: 'RS256', expiresIn: '30m', issuer: 'amazegame-auth', audience: 'amazegame' });
+    const token = jwt.sign({ sub: account.id, username: account.username }, privateKey, { algorithm: jwtAlgorithm, expiresIn: '30m', issuer: 'amazegame-auth', audience: 'amazegame' });
     res.cookie('session', token, { ...cookieOptions, maxAge: 30 * 60 * 1000 });
     res.json({ user: { id: account.id, username: account.username } });
   } catch {
@@ -74,11 +76,27 @@ app.post('/login', stateGuard, authLimiter, validateCredentials, async (req, res
   }
 });
 app.post('/logout', stateGuard, (_req, res) => { res.clearCookie('session', cookieOptions); res.status(204).end(); });
+function verifySession(token) {
+  const verificationKey = jwtSecret ?? readFileSync(process.env.JWT_PUBLIC_KEY, 'utf8');
+  return jwt.verify(token, verificationKey, { algorithms: [jwtAlgorithm], issuer: 'amazegame-auth', audience: 'amazegame' });
+}
 app.get('/me', (req, res) => {
   try {
-    const claims = jwt.verify(req.cookies.session ?? '', readFileSync(process.env.JWT_PUBLIC_KEY, 'utf8'), { algorithms: ['RS256'], issuer: 'amazegame-auth', audience: 'amazegame' });
+    const claims = verifySession(req.cookies.session ?? '');
     res.json({ user: { id: claims.sub, username: claims.username } });
   } catch { res.status(401).json({ error: 'Unauthorized' }); }
 });
 app.use((err, _req, res, _next) => { if (err instanceof SyntaxError) return res.status(400).json({ error: 'Invalid request' }); res.status(500).json({ error: 'Request failed' }); });
-app.listen(Number(process.env.PORT ?? 3001), '0.0.0.0');
+async function start() {
+  if (process.env.AUTO_MIGRATE === 'true') {
+    await pool.query(`CREATE TABLE IF NOT EXISTS accounts (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      username VARCHAR(24) NOT NULL UNIQUE,
+      email VARCHAR(254) NOT NULL UNIQUE,
+      password_hash TEXT NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )`);
+  }
+  app.listen(Number(process.env.PORT ?? 3001), '0.0.0.0');
+}
+start().catch(error => { console.error('Authentication service startup failed'); console.error(error.message); process.exit(1); });
