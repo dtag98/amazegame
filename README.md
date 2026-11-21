@@ -17,6 +17,8 @@ Use the Blueprint in `render.yaml` from Render's **New + > Blueprint** flow. It 
 
 The Blueprint uses paid plans for the private auth service and persistent database. The game service uses Render's free plan and can spin down while idle; choose a paid web plan in `render.yaml` if you need it continuously available for WebSocket sessions. Keep `.env` local and do not commit it.
 
+For a free trial with separate containers, create both auth and game as **public Free Web Services** instead of creating a private auth service. Configure `AUTH_SERVICE_URL` on the game service to the auth service's public HTTPS URL, and set the same `JWT_SECRET` on both services. Set auth's `PUBLIC_ORIGIN` to the game service URL and leave `TRUST_PROXY_ORIGIN` unset so auth continues enforcing the browser origin. A free Render Postgres database can be used for a short demo, but it expires after 30 days. Free web services can spin down while idle, and the auth service's first request after spin-down may be slow.
+
 ## Layout
 
 ```text

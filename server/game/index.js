@@ -2,7 +2,8 @@ import express from 'express';
 import helmet from 'helmet';
 import jwt from 'jsonwebtoken';
 import { readFileSync } from 'node:fs';
-import { createServer, request as proxyRequest } from 'node:http';
+import { createServer, request as httpProxyRequest } from 'node:http';
+import { request as httpsProxyRequest } from 'node:https';
 import { Server, Room } from '@colyseus/core';
 import { Schema, MapSchema, defineTypes } from '@colyseus/schema';
 import { WebSocketTransport } from '@colyseus/ws-transport';
@@ -11,17 +12,28 @@ const app = express();
 const origin = process.env.PUBLIC_ORIGIN ?? 'http://localhost';
 const jwtSecret = process.env.JWT_SECRET;
 const jwtAlgorithm = jwtSecret ? 'HS256' : 'RS256';
-const verificationKey = jwtSecret ?? readFileSync(process.env.JWT_PUBLIC_KEY, 'utf8');
+const publicKeyPath = process.env.JWT_PUBLIC_KEY;
+if (!jwtSecret && !publicKeyPath) {
+  throw new Error('JWT key is not configured. Set JWT_SECRET on this service, or set JWT_PUBLIC_KEY to a mounted PEM file.');
+}
+const verificationKey = jwtSecret ?? readFileSync(publicKeyPath, 'utf8');
 app.disable('x-powered-by');
 app.use(helmet({ hsts: process.env.COOKIE_SECURE === 'true' ? { maxAge: 31536000, includeSubDomains: true } : false, contentSecurityPolicy: { directives: { defaultSrc: ["'self'"], scriptSrc: ["'self'"], styleSrc: ["'self'"], imgSrc: ["'self'", 'data:'], connectSrc: ["'self'", origin.replace(/^http/, 'ws'), origin], objectSrc: ["'none'"], frameAncestors: ["'none'"], baseUri: ["'self'"] } } }));
-const authAddress = process.env.AUTH_SERVICE_HOSTPORT ?? 'localhost:3001';
+const authServiceUrl = process.env.AUTH_SERVICE_URL;
+const authTarget = authServiceUrl
+  ? new URL(authServiceUrl)
+  : new URL(`http://${process.env.AUTH_SERVICE_HOSTPORT ?? 'localhost:3001'}`);
+if (!['http:', 'https:'].includes(authTarget.protocol)) throw new Error('AUTH_SERVICE_URL must use http or https.');
 app.use('/api', (req, res) => {
   if (req.method !== 'GET' && req.headers.origin !== origin) return res.status(403).json({ error: 'Forbidden' });
-  const upstream = proxyRequest({ hostname: authAddress.split(':')[0], port: Number(authAddress.split(':')[1] ?? 3001), path: req.url, method: req.method, headers: { ...req.headers, host: authAddress } }, response => {
+  const proxyRequest = authTarget.protocol === 'https:' ? httpsProxyRequest : httpProxyRequest;
+  const basePath = authTarget.pathname.replace(/\/$/, '');
+  const upstream = proxyRequest({ hostname: authTarget.hostname, port: authTarget.port || undefined, path: `${basePath}${req.url}`, method: req.method, headers: { ...req.headers, host: authTarget.host } }, response => {
     res.writeHead(response.statusCode ?? 502, response.headers);
     response.pipe(res);
   });
   upstream.on('error', () => { if (!res.headersSent) res.status(502).json({ error: 'Authentication service unavailable' }); else res.destroy(); });
+  upstream.setTimeout(90000, () => upstream.destroy(new Error('Authentication service timed out')));
   req.pipe(upstream);
 });
 app.use(express.static('public', { index: 'index.html', maxAge: '1h', setHeaders(res, filePath) { if (filePath.endsWith('.html')) res.setHeader('Cache-Control', 'no-cache'); } }));

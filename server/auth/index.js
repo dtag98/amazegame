@@ -16,7 +16,11 @@ const cookieOptions = { httpOnly: true, secure, sameSite: 'lax', path: '/' };
 const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL, max: 10 });
 const jwtSecret = process.env.JWT_SECRET;
 const jwtAlgorithm = jwtSecret ? 'HS256' : 'RS256';
-const privateKey = jwtSecret ?? readFileSync(process.env.JWT_PRIVATE_KEY, 'utf8');
+const privateKeyPath = process.env.JWT_PRIVATE_KEY;
+if (!jwtSecret && !privateKeyPath) {
+  throw new Error('JWT signing key is not configured. Set JWT_SECRET on this service, or set JWT_PRIVATE_KEY to a mounted PEM file.');
+}
+const privateKey = jwtSecret ?? readFileSync(privateKeyPath, 'utf8');
 app.disable('x-powered-by');
 app.use(helmet({ hsts: secure ? { maxAge: 31536000, includeSubDomains: true } : false, contentSecurityPolicy: { directives: { defaultSrc: ["'self'"], scriptSrc: ["'self'"], styleSrc: ["'self'"], imgSrc: ["'self'", 'data:'], connectSrc: ["'self'", origin.replace(/^http/, 'ws')], objectSrc: ["'none'"], frameAncestors: ["'none'"], baseUri: ["'self'"] } } }));
 app.use(cors({ origin, credentials: true, methods: ['GET', 'POST'], allowedHeaders: ['Content-Type', 'X-CSRF-Token'] }));
