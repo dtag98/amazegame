@@ -19,9 +19,9 @@ const gameSession = createGameSession({
   },
   onChat: message => { const li = document.createElement('li'); li.textContent = `${message.username}: ${message.message}`; document.querySelector('#messages').append(li); },
   onRoom: joinedRoom => {
-    setupScene();
     accountArea.hidden = true;
     playArea.hidden = false;
+    setupScene();
     const syncPlayer = state => {
       const player = state?.players?.get?.(joinedRoom.sessionId);
       if (player && avatar) avatar.position.set(player.x, player.y + 0.9, player.z);
