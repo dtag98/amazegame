@@ -22,7 +22,10 @@ const gameSession = createGameSession({
     setupScene();
     accountArea.hidden = true;
     playArea.hidden = false;
-    const syncPlayer = state => { const player = state.players.get(joinedRoom.sessionId); if (player && avatar) avatar.position.set(player.x, player.y + 0.9, player.z); };
+    const syncPlayer = state => {
+      const player = state?.players?.get?.(joinedRoom.sessionId);
+      if (player && avatar) avatar.position.set(player.x, player.y + 0.9, player.z);
+    };
     joinedRoom.onStateChange(syncPlayer);
     syncPlayer(joinedRoom.state);
   },
