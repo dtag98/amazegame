@@ -5,6 +5,10 @@ import './style.css';
 
 const status = document.querySelector('#status');
 const authArea = document.querySelector('#auth');
+const accountArea = document.querySelector('#account');
+const welcome = document.querySelector('#welcome');
+const connectButton = document.querySelector('#connect-game');
+const logoutButton = document.querySelector('#logout');
 const playArea = document.querySelector('#play');
 let csrf = '';
 let scene, camera, renderer, avatar;
@@ -16,6 +20,7 @@ const gameSession = createGameSession({
   onChat: message => { const li = document.createElement('li'); li.textContent = `${message.username}: ${message.message}`; document.querySelector('#messages').append(li); },
   onRoom: joinedRoom => {
     setupScene();
+    accountArea.hidden = true;
     playArea.hidden = false;
     const syncPlayer = state => { const player = state.players.get(joinedRoom.sessionId); if (player && avatar) avatar.position.set(player.x, player.y + 0.9, player.z); };
     joinedRoom.onStateChange(syncPlayer);
@@ -62,13 +67,54 @@ async function csrfToken() {
   }
 }
 async function request(path, body) { await csrfToken(); const response = await fetch(`/api/${path}`, { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf }, body: JSON.stringify(body) }); const data = await responseJson(response); if (!response.ok) throw new Error(data.error ?? 'Request failed'); return data; }
-for (const [id, action] of [['register','register'],['login','login']]) document.querySelector(`#${id}`).addEventListener('submit', async event => { event.preventDefault(); const form = event.currentTarget; const submitButton = form.querySelector('button[type="submit"], button:not([type])'); if (submitButton?.disabled) return; if (submitButton) submitButton.disabled = true; const values = Object.fromEntries(new FormData(form)); try { const data = await request(action, values); status.textContent = `Welcome, ${data.user.username}`; if (action === 'login') await startGame(); } catch (error) { status.textContent = error.message; } finally { if (submitButton) submitButton.disabled = false; } });
-async function startGame() {
+for (const [id, action] of [['register','register'],['login','login']]) document.querySelector(`#${id}`).addEventListener('submit', async event => {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const submitButton = form.querySelector('button[type="submit"], button:not([type])');
+  if (submitButton?.disabled) return;
+  if (submitButton) submitButton.disabled = true;
+  const values = Object.fromEntries(new FormData(form));
+  try {
+    const data = await request(action, values);
+    if (action === 'login') showSignedIn(data.user);
+    else status.textContent = `Account created for ${data.user.username}. Sign in to continue.`;
+  } catch (error) {
+    status.textContent = error.message;
+  } finally {
+    if (submitButton) submitButton.disabled = false;
+  }
+});
+function showSignedIn(user) {
   authArea.hidden = true;
+  accountArea.hidden = false;
+  playArea.hidden = true;
+  logoutButton.hidden = false;
+  connectButton.disabled = false;
+  connectButton.textContent = 'Connect to game';
+  welcome.textContent = `Welcome, ${user.username}`;
+  status.textContent = 'You are signed in. Connect to the game when you are ready.';
+}
+async function startGame() {
+  connectButton.disabled = true;
+  connectButton.textContent = 'Connecting…';
+  status.textContent = 'Connecting to the game…';
   try {
     await gameSession.start(true);
-  } catch { authArea.hidden = false; playArea.hidden = true; status.textContent = 'Could not connect to the game. Sign in and try again.'; }
+    if (!gameSession.connected) throw new Error('The server did not establish a game session.');
+    accountArea.hidden = true;
+    playArea.hidden = false;
+    status.textContent = '';
+  } catch (error) {
+    const reason = error instanceof Error && error.message ? ` ${error.message}` : ' Please try again.';
+    returnToGameLobby(`Could not connect to the game.${reason} You are still signed in; you can retry.`);
+  } finally {
+    if (!accountArea.hidden) {
+      connectButton.disabled = false;
+      connectButton.textContent = 'Try again';
+    }
+  }
 }
+connectButton.addEventListener('click', startGame);
 function setupScene() {
   const host = document.querySelector('#scene');
   scene = new THREE.Scene();
@@ -117,21 +163,40 @@ function setupScene() {
   animate();
 }
 document.querySelector('#chat').addEventListener('submit', event => { event.preventDefault(); const input = event.currentTarget.elements.message; gameSession.sendChat(input.value); input.value = ''; });
-async function returnToLogin(message) {
+function clearGameView() {
   animationActive = false;
   keys.clear();
   window.removeEventListener('keydown', handleKeyDown);
   window.removeEventListener('keyup', handleKeyUp);
   window.removeEventListener('blur', clearKeys);
-  gameSession.disconnect();
   document.querySelector('#messages').replaceChildren();
   document.querySelector('#scene').replaceChildren();
   renderer?.dispose();
   renderer = undefined;
   avatar = undefined;
+}
+function returnToGameLobby(message) {
+  clearGameView();
+  gameSession.disconnect();
+  authArea.hidden = true;
+  accountArea.hidden = false;
   playArea.hidden = true;
-  authArea.hidden = false;
+  logoutButton.hidden = false;
+  connectButton.disabled = false;
+  connectButton.textContent = 'Try again';
   status.textContent = message;
 }
-document.querySelector('#logout').addEventListener('click', async () => { try { await request('logout', {}); } catch {} await returnToLogin('Signed out'); });
-fetch('/api/me', { credentials: 'include' }).then(async response => response.ok ? response.json() : null).then(data => { if (data) { status.textContent = `Welcome back, ${data.user.username}`; return startGame(); } }).catch(() => {}).finally(() => { if (!gameSession.connected) { playArea.hidden = true; authArea.hidden = false; } });
+logoutButton.addEventListener('click', async () => {
+  try { await request('logout', {}); } catch {}
+  clearGameView();
+  gameSession.disconnect();
+  accountArea.hidden = true;
+  logoutButton.hidden = true;
+  playArea.hidden = true;
+  authArea.hidden = false;
+  status.textContent = 'Signed out';
+});
+fetch('/api/me', { credentials: 'include' })
+  .then(async response => response.ok ? response.json() : null)
+  .then(data => { if (data?.user) showSignedIn(data.user); })
+  .catch(() => {});

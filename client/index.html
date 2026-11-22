@@ -1,1 +1,44 @@
-<!doctype html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Amaze Game</title></head><body><main><h1>Amaze Game</h1><section id="auth"><form id="register"><h2>Create account</h2><input name="username" placeholder="Username" autocomplete="username" required minlength="3" maxlength="24"><input name="email" type="email" placeholder="Email" autocomplete="email" required><input name="password" type="password" placeholder="Password (10+ characters)" autocomplete="new-password" required minlength="10" maxlength="72"><button>Create account</button></form><form id="login"><h2>Sign in</h2><input name="username" placeholder="Username" autocomplete="username" required><input name="password" type="password" placeholder="Password" autocomplete="current-password" required><button>Sign in</button></form></section><p id="status" role="status"></p><section id="play" hidden><button id="logout">Log out</button><p>Move with WASD. Chat messages are shown as text.</p><div id="scene"></div><form id="chat"><input name="message" maxlength="200" placeholder="Chat"><button>Send</button></form><ul id="messages"></ul></section></main><script type="module" src="/src/main.js"></script></body></html>
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Amaze Game</title>
+  </head>
+  <body>
+    <main>
+      <h1>Amaze Game</h1>
+      <section id="auth">
+        <form id="register">
+          <h2>Create account</h2>
+          <input name="username" placeholder="Username" autocomplete="username" required minlength="3" maxlength="24">
+          <input name="email" type="email" placeholder="Email" autocomplete="email" required>
+          <input name="password" type="password" placeholder="Password (10+ characters)" autocomplete="new-password" required minlength="10" maxlength="72">
+          <button>Create account</button>
+        </form>
+        <form id="login">
+          <h2>Sign in</h2>
+          <input name="username" placeholder="Username" autocomplete="username" required>
+          <input name="password" type="password" placeholder="Password" autocomplete="current-password" required>
+          <button>Sign in</button>
+        </form>
+      </section>
+      <section id="account" hidden>
+        <p id="welcome"></p>
+        <button id="connect-game" type="button">Connect to game</button>
+      </section>
+      <button id="logout" type="button" hidden>Log out</button>
+      <p id="status" role="status"></p>
+      <section id="play" hidden>
+        <p>Move with WASD. Chat messages are shown as text.</p>
+        <div id="scene"></div>
+        <form id="chat">
+          <input name="message" maxlength="200" placeholder="Chat">
+          <button>Send</button>
+        </form>
+        <ul id="messages"></ul>
+      </section>
+    </main>
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>
