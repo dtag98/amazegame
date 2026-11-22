@@ -28,8 +28,40 @@ let lastMoveSent = 0;
 const handleKeyDown = event => { if (!['INPUT', 'TEXTAREA'].includes(event.target?.tagName)) keys.add(event.key.toLowerCase()); };
 const handleKeyUp = event => keys.delete(event.key.toLowerCase());
 const clearKeys = () => keys.clear();
-async function csrfToken() { const response = await fetch('/api/csrf-token', { credentials: 'include' }); csrf = (await response.json()).csrfToken; }
-async function request(path, body) { await csrfToken(); const response = await fetch(`/api/${path}`, { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf }, body: JSON.stringify(body) }); const data = await response.json().catch(() => ({})); if (!response.ok) throw new Error(data.error ?? 'Request failed'); return data; }
+async function responseJson(response) {
+  const contentType = response.headers.get('content-type') ?? '';
+  if (!contentType.includes('application/json')) {
+    if (response.status >= 500) throw new Error('Authentication is temporarily unavailable. Please try again in a few seconds.');
+    throw new Error('The server returned an unexpected response. Please try again.');
+  }
+  try { return await response.json(); }
+  catch { throw new Error('The server returned an invalid response. Please try again.'); }
+}
+async function csrfToken() {
+  const retryDelays = [2000, 4000, 8000, 12000];
+  for (let attempt = 0; ; attempt++) {
+    try {
+      const response = await fetch('/api/csrf-token', { credentials: 'include' });
+      const isJson = (response.headers.get('content-type') ?? '').includes('application/json');
+      if ((!isJson || [502, 503, 504].includes(response.status)) && attempt < retryDelays.length) {
+        await new Promise(resolve => setTimeout(resolve, retryDelays[attempt]));
+        continue;
+      }
+      const data = await responseJson(response);
+      if (!response.ok) throw new Error(data.error ?? 'Could not prepare the authentication request.');
+      if (typeof data.csrfToken !== 'string') throw new Error('Could not prepare the authentication request. Please try again.');
+      csrf = data.csrfToken;
+      return;
+    } catch (error) {
+      if (error instanceof TypeError && attempt < retryDelays.length) {
+        await new Promise(resolve => setTimeout(resolve, retryDelays[attempt]));
+        continue;
+      }
+      throw error;
+    }
+  }
+}
+async function request(path, body) { await csrfToken(); const response = await fetch(`/api/${path}`, { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf }, body: JSON.stringify(body) }); const data = await responseJson(response); if (!response.ok) throw new Error(data.error ?? 'Request failed'); return data; }
 for (const [id, action] of [['register','register'],['login','login']]) document.querySelector(`#${id}`).addEventListener('submit', async event => { event.preventDefault(); const form = event.currentTarget; const submitButton = form.querySelector('button[type="submit"], button:not([type])'); if (submitButton?.disabled) return; if (submitButton) submitButton.disabled = true; const values = Object.fromEntries(new FormData(form)); try { const data = await request(action, values); status.textContent = `Welcome, ${data.user.username}`; if (action === 'login') await startGame(); } catch (error) { status.textContent = error.message; } finally { if (submitButton) submitButton.disabled = false; } });
 async function startGame() {
   authArea.hidden = true;
