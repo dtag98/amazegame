@@ -2,7 +2,6 @@ import express from 'express';
 import helmet from 'helmet';
 import cors from 'cors';
 import cookieParser from 'cookie-parser';
-import rateLimit from 'express-rate-limit';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import pg from 'pg';
@@ -39,7 +38,6 @@ function stateGuard(req, res, next) {
   if (!csrfValid(req)) return res.status(403).json({ error: 'CSRF validation failed' });
   next();
 }
-const authLimiter = rateLimit({ windowMs: 15 * 60 * 1000, limit: 10, standardHeaders: true, legacyHeaders: false, message: { error: 'Too many attempts. Try again later.' } });
 app.get('/health', (_req, res) => res.json({ status: 'ok' }));
 app.get('/csrf-token', (_req, res) => {
   const token = csrfToken();
@@ -53,7 +51,7 @@ function validateCredentials(req, res, next) {
   if (req.path === '/register' && (typeof email !== 'string' || email.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))) return res.status(400).json({ error: 'Invalid credentials format' });
   next();
 }
-app.post('/register', stateGuard, authLimiter, validateCredentials, async (req, res) => {
+app.post('/register', stateGuard, validateCredentials, async (req, res) => {
   const { username, email, password } = req.body;
   try {
     const hash = await bcrypt.hash(password, 12);
@@ -65,7 +63,7 @@ app.post('/register', stateGuard, authLimiter, validateCredentials, async (req, 
     res.status(500).json({ error: 'Request failed' });
   }
 });
-app.post('/login', stateGuard, authLimiter, validateCredentials, async (req, res) => {
+app.post('/login', stateGuard, validateCredentials, async (req, res) => {
   try {
     const result = await pool.query('SELECT id, username, password_hash FROM accounts WHERE username = $1', [req.body.username]);
     const account = result.rows[0];
