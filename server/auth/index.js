@@ -1,104 +1,196 @@
 import express from 'express';
 import helmet from 'helmet';
-import cors from 'cors';
 import cookieParser from 'cookie-parser';
+import rateLimit from 'express-rate-limit';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import pg from 'pg';
 import { readFileSync } from 'node:fs';
-import { randomBytes, timingSafeEqual } from 'node:crypto';
+import { createPrivateKey, createPublicKey, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
+import {
+  browserConfig, JWT_ALGORITHM, JWT_AUDIENCE, JWT_ISSUER,
+  SESSION_TTL_SECONDS, USERNAME_PATTERN,
+} from '../../shared/auth.js';
+import { createRevocations } from '../../shared/revocations.js';
+import { createSessionVerifier } from '../../shared/session.js';
+import { createLoginThrottle, createPasswordWorkQueue, PasswordWorkTimeoutError } from './password-work.js';
 
+const { origin, secure, sessionCookie, csrfCookie, cookieOptions } = browserConfig(process.env.PUBLIC_ORIGIN);
+const privateKey = createPrivateKey(readFileSync(process.env.JWT_PRIVATE_KEY));
+if (privateKey.asymmetricKeyType !== 'rsa' || privateKey.asymmetricKeyDetails.modulusLength < 2048) {
+  throw new Error('JWT_PRIVATE_KEY must contain an RSA private key of at least 2048 bits.');
+}
+const publicPem = createPublicKey(privateKey).export({ type: 'spki', format: 'pem' });
+const verifySession = createSessionVerifier(publicPem, sessionCookie, jwt);
+const revocations = createRevocations(process.env.SESSION_REVOCATIONS_DIR);
+const AUTH_REQUESTS_PER_IP_PER_ROUTE = 60;
+const passwordWork = createPasswordWorkQueue({ maxQueuedPerKind: AUTH_REQUESTS_PER_IP_PER_ROUTE });
+const loginThrottle = createLoginThrottle();
+
+const pool = new pg.Pool({ max: 10, connectionTimeoutMillis: 3000, statement_timeout: 5000 });
+pool.on('error', () => console.error('Idle authentication database connection failed'));
 const app = express();
-const origin = process.env.PUBLIC_ORIGIN ?? 'http://localhost';
-const secure = process.env.COOKIE_SECURE === 'true';
-const cookieOptions = { httpOnly: true, secure, sameSite: 'lax', path: '/' };
-const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL, max: 10 });
-const jwtSecret = process.env.JWT_SECRET;
-const jwtAlgorithm = jwtSecret ? 'HS256' : 'RS256';
-const privateKeyPath = process.env.JWT_PRIVATE_KEY;
-if (!jwtSecret && !privateKeyPath) {
-  throw new Error('JWT signing key is not configured. Set JWT_SECRET on this service, or set JWT_PRIVATE_KEY to a mounted PEM file.');
-}
-const privateKey = jwtSecret ?? readFileSync(privateKeyPath, 'utf8');
+if (process.env.TRUST_NGINX === 'true') app.set('trust proxy', 1);
 app.disable('x-powered-by');
-app.use(helmet({ hsts: secure ? { maxAge: 31536000, includeSubDomains: true } : false, contentSecurityPolicy: { directives: { defaultSrc: ["'self'"], scriptSrc: ["'self'"], styleSrc: ["'self'"], imgSrc: ["'self'", 'data:'], connectSrc: ["'self'", origin.replace(/^http/, 'ws')], objectSrc: ["'none'"], frameAncestors: ["'none'"], baseUri: ["'self'"] } } }));
-app.use(cors({ origin, credentials: true, methods: ['GET', 'POST'], allowedHeaders: ['Content-Type', 'X-CSRF-Token'] }));
-app.use(express.json({ limit: '8kb', strict: true }));
+app.use(helmet({
+  strictTransportSecurity: secure ? { maxAge: 31_536_000 } : false,
+  contentSecurityPolicy: { directives: { upgradeInsecureRequests: secure ? [] : null } },
+}));
+app.use((_req, res, next) => {
+  res.set('Cache-Control', 'no-store');
+  next();
+});
 app.use(cookieParser());
-const csrfCookie = { secure, sameSite: 'lax', path: '/' };
-function csrfToken() { return randomBytes(32).toString('hex'); }
-function csrfValid(req) {
-  const cookie = req.cookies.csrf;
-  const header = req.get('x-csrf-token');
-  if (!cookie || !header || !/^[a-f0-9]{64}$/.test(cookie) || !/^[a-f0-9]{64}$/.test(header)) return false;
-  return timingSafeEqual(Buffer.from(cookie), Buffer.from(header));
-}
+
+const csrfPattern = /^[a-f0-9]{64}$/;
 function stateGuard(req, res, next) {
-  if (process.env.TRUST_PROXY_ORIGIN !== 'true' && req.get('origin') !== origin) return res.status(403).json({ error: 'Forbidden' });
-  if (!csrfValid(req)) return res.status(403).json({ error: 'CSRF validation failed' });
+  const cookie = req.cookies[csrfCookie];
+  const header = req.get('X-CSRF-Token');
+  if (req.get('Origin') !== origin || typeof cookie !== 'string' || typeof header !== 'string'
+      || !csrfPattern.test(cookie) || !csrfPattern.test(header)
+      || !timingSafeEqual(Buffer.from(cookie, 'hex'), Buffer.from(header, 'hex'))) {
+    return res.status(403).json({ error: 'Request did not pass the origin and CSRF checks' });
+  }
   next();
 }
+
+const json = express.json({ limit: '8kb', strict: true });
+const attemptLimit = limit => rateLimit({
+  windowMs: 60_000,
+  limit,
+  standardHeaders: 'draft-7',
+  legacyHeaders: false,
+  message: { error: 'Too many attempts. Try again later.' },
+});
+
+function retryLater(res, status = 503, retryAfter = 1) {
+  const error = status === 429 ? 'Too many attempts. Try again later.' : 'Authentication is temporarily busy. Try again.';
+  return res.set('Retry-After', String(retryAfter)).status(status).json({ error });
+}
+
+function revokeCurrentSession(req, res) {
+  const session = verifySession(req.headers.cookie);
+  try {
+    if (session) revocations.revoke(session);
+    return true;
+  } catch {
+    console.error('Could not revoke the previous browser session');
+    retryLater(res);
+    return false;
+  }
+}
+
 app.get('/health', (_req, res) => res.json({ status: 'ok' }));
-app.get('/csrf-token', (_req, res) => {
-  const token = csrfToken();
-  res.cookie('csrf', token, csrfCookie);
+app.get('/csrf-token', (req, res) => {
+  const existing = req.cookies[csrfCookie];
+  const token = typeof existing === 'string' && csrfPattern.test(existing)
+    ? existing : randomBytes(32).toString('hex');
+  res.cookie(csrfCookie, token, cookieOptions);
   res.json({ csrfToken: token });
 });
-const validFields = (body) => body && typeof body === 'object' && !Array.isArray(body);
-function validateCredentials(req, res, next) {
-  const { username, email, password } = req.body ?? {};
-  if (!validFields(req.body) || typeof username !== 'string' || !/^[A-Za-z0-9_]{3,24}$/.test(username) || typeof password !== 'string' || password.length < 10 || password.length > 72) return res.status(400).json({ error: 'Invalid credentials format' });
-  if (req.path === '/register' && (typeof email !== 'string' || email.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))) return res.status(400).json({ error: 'Invalid credentials format' });
-  next();
+
+function validCredentials(username, password) {
+  return typeof username === 'string' && USERNAME_PATTERN.test(username)
+    && typeof password === 'string' && password.length >= 10 && password.length <= 72
+    && !password.includes('\0') && !bcrypt.truncates(password);
 }
-app.post('/register', stateGuard, validateCredentials, async (req, res) => {
-  const { username, email, password } = req.body;
+
+const HASH_COST = 12;
+// A valid fixed-cost hash keeps unknown users on the same bcrypt verification path.
+const DUMMY_PASSWORD_HASH = '$2a$12$C6UzMDM.H6dfI/f/IKcEe.9a5y4m5fBT6U3NnbHAg8oXw4yAfM0aK';
+
+app.post('/register', stateGuard, attemptLimit(AUTH_REQUESTS_PER_IP_PER_ROUTE), json, async (req, res) => {
+  const { username, password } = req.body ?? {};
+  if (!validCredentials(username, password)) {
+    return res.status(400).json({ error: 'Enter a valid username and password (10+ characters, up to 72 UTF-8 bytes)' });
+  }
+
   try {
-    const hash = await bcrypt.hash(password, 12);
-    const result = await pool.query('INSERT INTO accounts (username, email, password_hash) VALUES ($1, $2, $3) RETURNING id, username', [username, email.toLowerCase(), hash]);
-    res.status(201).json({ user: result.rows[0] });
-  } catch (err) {
-    if (err.code === '23505') return res.status(409).json({ error: 'Account could not be created' });
+    const pending = passwordWork.run('register', async () => {
+      const hash = await bcrypt.hash(password, HASH_COST);
+      const { rows } = await pool.query(
+        'INSERT INTO accounts (username, password_hash) VALUES ($1, $2) RETURNING id, username',
+        [username, hash],
+      );
+      return rows[0];
+    });
+    if (!pending) return retryLater(res);
+    res.status(201).json({ user: await pending });
+  } catch (error) {
+    if (error instanceof PasswordWorkTimeoutError) return retryLater(res);
+    if (error.code === '23505') return res.status(409).json({ error: 'Account could not be created' });
     console.error('Registration database operation failed');
     res.status(500).json({ error: 'Request failed' });
   }
 });
-app.post('/login', stateGuard, validateCredentials, async (req, res) => {
+
+app.post('/login', stateGuard, attemptLimit(AUTH_REQUESTS_PER_IP_PER_ROUTE), json, async (req, res) => {
+  const { username, password } = req.body ?? {};
+  if (!validCredentials(username, password)) return res.status(400).json({ error: 'Invalid credentials format' });
+  const attempt = loginThrottle.begin(username);
+  if (attempt.status) return retryLater(res, attempt.status, attempt.retryAfter);
+
+  let verified;
   try {
-    const result = await pool.query('SELECT id, username, password_hash FROM accounts WHERE username = $1', [req.body.username]);
-    const account = result.rows[0];
-    const ok = await bcrypt.compare(req.body.password, account?.password_hash ?? '$2a$12$C6UzMDM.H6dfI/f/IKcEe.9a5y4m5fBT6U3NnbHAg8oXw4yAfM0aK');
-    if (!account || !ok) return res.status(401).json({ error: 'Invalid username or password' });
-    const token = jwt.sign({ sub: account.id, username: account.username }, privateKey, { algorithm: jwtAlgorithm, expiresIn: '30m', issuer: 'amazegame-auth', audience: 'amazegame' });
-    res.cookie('session', token, { ...cookieOptions, maxAge: 30 * 60 * 1000 });
+    const pending = passwordWork.run('login', async () => {
+      const { rows: [account] } = await pool.query('SELECT id, username, password_hash FROM accounts WHERE username = $1', [username]);
+      const passwordMatches = await bcrypt.compare(password, account?.password_hash ?? DUMMY_PASSWORD_HASH);
+      return account && passwordMatches ? account : null;
+    });
+    if (!pending) return retryLater(res);
+    const account = await pending;
+    verified = Boolean(account);
+    if (!account) return res.status(401).json({ error: 'Invalid username or password' });
+
+    const token = jwt.sign({ sub: account.id, username: account.username }, privateKey, {
+      algorithm: JWT_ALGORITHM,
+      expiresIn: SESSION_TTL_SECONDS,
+      issuer: JWT_ISSUER,
+      audience: JWT_AUDIENCE,
+      jwtid: randomUUID(),
+    });
+    if (!revokeCurrentSession(req, res)) return;
+    res.cookie(sessionCookie, token, { ...cookieOptions, maxAge: SESSION_TTL_SECONDS * 1000 });
     res.json({ user: { id: account.id, username: account.username } });
-  } catch {
+  } catch (error) {
+    if (error instanceof PasswordWorkTimeoutError) return retryLater(res);
     console.error('Login operation failed');
     res.status(500).json({ error: 'Request failed' });
+  } finally {
+    attempt.finish(verified);
   }
 });
-app.post('/logout', stateGuard, (_req, res) => { res.clearCookie('session', cookieOptions); res.status(204).end(); });
-function verifySession(token) {
-  const verificationKey = jwtSecret ?? readFileSync(process.env.JWT_PUBLIC_KEY, 'utf8');
-  return jwt.verify(token, verificationKey, { algorithms: [jwtAlgorithm], issuer: 'amazegame-auth', audience: 'amazegame' });
-}
-app.get('/me', (req, res) => {
-  try {
-    const claims = verifySession(req.cookies.session ?? '');
-    res.json({ user: { id: claims.sub, username: claims.username } });
-  } catch { res.status(401).json({ error: 'Unauthorized' }); }
+
+app.post('/logout', stateGuard, (req, res) => {
+  if (!revokeCurrentSession(req, res)) return;
+  res.clearCookie(sessionCookie, cookieOptions);
+  res.clearCookie(csrfCookie, cookieOptions);
+  res.status(204).end();
 });
-app.use((err, _req, res, _next) => { if (err instanceof SyntaxError) return res.status(400).json({ error: 'Invalid request' }); res.status(500).json({ error: 'Request failed' }); });
-async function start() {
-  if (process.env.AUTO_MIGRATE === 'true') {
-    await pool.query(`CREATE TABLE IF NOT EXISTS accounts (
-      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-      username VARCHAR(24) NOT NULL UNIQUE,
-      email VARCHAR(254) NOT NULL UNIQUE,
-      password_hash TEXT NOT NULL,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    )`);
-  }
+
+app.all(['/register', '/login', '/logout'], (_req, res) => {
+  res.set('Allow', 'POST').status(405).json({ error: 'Use POST for this request' });
+});
+app.use((error, _req, res, _next) => {
+  if (error.type === 'entity.too.large') return res.status(413).json({ error: 'Request body is too large' });
+  if (error.type === 'entity.parse.failed') return res.status(400).json({ error: 'Invalid JSON' });
+  if (error.status === 415) return res.status(415).json({ error: 'Unsupported request body format' });
+  res.status(500).json({ error: 'Request failed' });
+});
+
+try {
+  await pool.query('SELECT id FROM accounts LIMIT 1');
+  revocations.prune();
   app.listen(Number(process.env.PORT ?? 3001), '0.0.0.0');
+  setInterval(() => {
+    try {
+      revocations.prune();
+    } catch {
+      console.error('Could not prune expired session revocations');
+    }
+  }, 60_000).unref();
+} catch {
+  console.error('Authentication service could not initialize its database or session state');
+  await pool.end();
+  process.exitCode = 1;
 }
-start().catch(error => { console.error('Authentication service startup failed'); console.error(error.message); process.exit(1); });

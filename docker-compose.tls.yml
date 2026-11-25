@@ -1,0 +1,32 @@
+x-https-origin: &https-origin "https://${TLS_AUTHORITY:?Set TLS_AUTHORITY to your HTTPS hostname, including any non-default port}"
+
+services:
+  nginx:
+    ports: !override
+      - "${TLS_BIND_ADDRESS:-127.0.0.1}:${TLS_HTTP_PORT:-80}:80"
+      - "${TLS_BIND_ADDRESS:-127.0.0.1}:${TLS_HTTPS_PORT:-443}:443"
+    environment:
+      PUBLIC_ORIGIN: *https-origin
+      NGINX_ENVSUBST_FILTER: "^PUBLIC_ORIGIN$$"
+    volumes: !override
+      - ./nginx/upstreams.conf:/etc/nginx/conf.d/00-upstreams.conf:ro
+      - ./nginx/proxy-locations.conf:/etc/nginx/proxy-locations.conf:ro
+      - ./nginx/tls.conf:/etc/nginx/templates/default.conf.template:ro
+      - type: bind
+        source: "${TLS_CERT_PATH:?Set TLS_CERT_PATH to the external full chain PEM}"
+        target: /etc/nginx/tls/fullchain.pem
+        read_only: true
+        bind: { create_host_path: false }
+      - type: bind
+        source: "${TLS_KEY_PATH:?Set TLS_KEY_PATH to the external private key PEM}"
+        target: /etc/nginx/tls/private.key
+        read_only: true
+        bind: { create_host_path: false }
+
+  auth:
+    environment:
+      PUBLIC_ORIGIN: *https-origin
+
+  game:
+    environment:
+      PUBLIC_ORIGIN: *https-origin

@@ -8,18 +8,17 @@
   <body>
     <main>
       <h1>Amaze Game</h1>
-      <section id="auth">
-        <form id="register">
+      <section id="auth" hidden>
+        <form id="register" method="post" action="/api/register">
           <h2>Create account</h2>
-          <input name="username" placeholder="Username" autocomplete="username" required minlength="3" maxlength="24">
-          <input name="email" type="email" placeholder="Email" autocomplete="email" required>
-          <input name="password" type="password" placeholder="Password (10+ characters)" autocomplete="new-password" required minlength="10" maxlength="72">
+          <input name="username" placeholder="Username" aria-label="Username" autocomplete="username" required minlength="3" maxlength="24" pattern="[A-Za-z0-9_]{3,24}">
+          <input name="password" type="password" placeholder="Password (10+ characters)" aria-label="Password" autocomplete="new-password" required minlength="10" maxlength="72">
           <button>Create account</button>
         </form>
-        <form id="login">
+        <form id="login" method="post" action="/api/login">
           <h2>Sign in</h2>
-          <input name="username" placeholder="Username" autocomplete="username" required>
-          <input name="password" type="password" placeholder="Password" autocomplete="current-password" required>
+          <input name="username" placeholder="Username" aria-label="Username" autocomplete="username" required>
+          <input name="password" type="password" placeholder="Password" aria-label="Password" autocomplete="current-password" required>
           <button>Sign in</button>
         </form>
       </section>
@@ -33,7 +32,7 @@
         <p>Move with WASD. Chat messages are shown as text.</p>
         <div id="scene"></div>
         <form id="chat">
-          <input name="message" maxlength="200" placeholder="Chat">
+          <input name="message" maxlength="200" placeholder="Chat" aria-label="Chat message">
           <button>Send</button>
         </form>
         <ul id="messages"></ul>

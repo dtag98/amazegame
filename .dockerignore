@@ -1,6 +1,9 @@
 .git
 .idea
 .env
+.env.*
+**/*.pem
+**/*.key
 node_modules
 **/node_modules
 client/dist

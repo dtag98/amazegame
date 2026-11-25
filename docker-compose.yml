@@ -1,58 +1,141 @@
+x-service-logging: &service-logging
+  driver: local
+  options:
+    max-size: "10m"
+    max-file: "3"
+
 services:
   nginx:
-    image: nginx:1.27-alpine
-    ports: ["8080:80"]
-    volumes: ["./nginx/default.conf:/etc/nginx/conf.d/default.conf:ro"]
-    depends_on: [auth, game]
+    image: nginx:1.30.7-alpine-slim@sha256:8c950211a641ec5b23f265450517001f6bcca533666120ebe36cb4cff3d00a55
+    ports:
+      - "127.0.0.1:${LOCAL_HTTP_PORT:-8080}:80"
+    volumes:
+      - ./nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./nginx/upstreams.conf:/etc/nginx/conf.d/00-upstreams.conf:ro
+      - ./nginx/proxy-locations.conf:/etc/nginx/proxy-locations.conf:ro
+    networks: [proxy-auth, proxy-game]
+    depends_on:
+      auth: { condition: service_healthy }
+      game: { condition: service_healthy }
     restart: unless-stopped
+    logging: *service-logging
+
   auth:
     build:
       context: .
       dockerfile: server/auth/Dockerfile
     environment:
-      PORT: 3001
-      DATABASE_URL: postgres://${APP_DB_USER:-game_app}:${APP_DB_PASSWORD:-change-this-app-password}@db:5432/${POSTGRES_DB:-amazegame}
+      PORT: "3001"
+      PGHOST: db
+      PGDATABASE: ${POSTGRES_DB:-amazegame}
+      PGUSER: ${APP_DB_USER:-game_app}
+      PGPASSWORD: "${APP_DB_PASSWORD:?Set APP_DB_PASSWORD in .env}"
       PUBLIC_ORIGIN: ${PUBLIC_ORIGIN:-http://localhost:8080}
-      COOKIE_SECURE: ${COOKIE_SECURE:-false}
-      JWT_PRIVATE_KEY: /run/keys/private.pem
-      JWT_PUBLIC_KEY: /run/keys/public.pem
-    volumes: ["jwt-keys:/run/keys"]
+      TRUST_NGINX: "true"
+      JWT_PRIVATE_KEY: /run/jwt-private/private.pem
+      JWT_PUBLIC_KEY: /run/jwt-public/public.pem
+      SESSION_REVOCATIONS_DIR: /run/session-revocations
+    volumes:
+      - jwt-private:/run/jwt-private
+      - jwt-public:/run/jwt-public
+      - session-revocations:/run/session-revocations
+    networks: [proxy-auth, auth-db]
     depends_on:
       db: { condition: service_healthy }
+      db-migrate: { condition: service_completed_successfully }
     healthcheck:
-      test: ["CMD", "node", "-e", "fetch('http://localhost:3001/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3001/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
       interval: 5s
       timeout: 3s
       retries: 20
     restart: unless-stopped
+    logging: *service-logging
+
   game:
     build: .
     environment:
-      PORT: 3002
+      PORT: "3002"
       PUBLIC_ORIGIN: ${PUBLIC_ORIGIN:-http://localhost:8080}
-      COOKIE_SECURE: ${COOKIE_SECURE:-false}
-      JWT_PUBLIC_KEY: /run/keys/public.pem
-    volumes: ["jwt-keys:/run/keys:ro"]
+      JWT_PUBLIC_KEY: /run/jwt-public/public.pem
+      SESSION_REVOCATIONS_DIR: /run/session-revocations
+    volumes:
+      - jwt-public:/run/jwt-public:ro
+      - session-revocations:/run/session-revocations:ro
+    networks: [proxy-game]
     depends_on:
       auth: { condition: service_healthy }
-    restart: unless-stopped
-  db:
-    image: postgres:16-alpine
-    environment:
-      POSTGRES_DB: ${POSTGRES_DB:-amazegame}
-      POSTGRES_USER: ${POSTGRES_USER:-postgres}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-this-postgres-password}
-      APP_DB_USER: ${APP_DB_USER:-game_app}
-      APP_DB_PASSWORD: ${APP_DB_PASSWORD:-change-this-app-password}
-    volumes:
-      - postgres-data:/var/lib/postgresql/data
-      - ./database/init-app-user.sh:/docker-entrypoint-initdb.d/10-app-user.sh:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3002/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
       interval: 5s
       timeout: 3s
       retries: 20
     restart: unless-stopped
+    logging: *service-logging
+
+  db:
+    image: &postgres-image postgres:16.16-alpine3.23@sha256:a23cda8ed4733a74cd0a328fcb525a43c35cdbaa845b6fdb8f343646f995cc1e
+    entrypoint:
+      - /bin/sh
+      - -ec
+      - |
+        for db_password in "$$POSTGRES_PASSWORD" "$$APP_DB_PASSWORD"; do
+          case "$$db_password" in
+            ''|change-this-postgres-password|change-this-app-password)
+              printf '%s\n' 'Set non-example PostgreSQL passwords in .env.' >&2
+              exit 78
+              ;;
+          esac
+        done
+        exec docker-entrypoint.sh "$$@"
+      - postgres-password-check
+    command: [postgres]
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-amazegame}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}"
+      APP_DB_USER: ${APP_DB_USER:-game_app}
+      APP_DB_PASSWORD: "${APP_DB_PASSWORD:?Set APP_DB_PASSWORD in .env}"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./database/init-app-user.sql:/docker-entrypoint-initdb.d/10-app-user.sql:ro
+    networks: [auth-db]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+    logging: *service-logging
+
+  db-migrate:
+    image: *postgres-image
+    entrypoint: [psql, --no-psqlrc, --file=/migrations/accounts-access.sql]
+    environment:
+      PGHOST: db
+      PGDATABASE: ${POSTGRES_DB:-amazegame}
+      PGUSER: ${POSTGRES_USER:-postgres}
+      PGPASSWORD: "${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}"
+      PGCONNECT_TIMEOUT: "5"
+      APP_DB_USER: ${APP_DB_USER:-game_app}
+    user: postgres
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    volumes:
+      - ./database/accounts-access.sql:/migrations/accounts-access.sql:ro
+    networks: [auth-db]
+    depends_on:
+      db: { condition: service_healthy }
+    logging: *service-logging
+
+networks:
+  proxy-auth:
+  proxy-game:
+  auth-db:
+    internal: true
+
 volumes:
   postgres-data:
-  jwt-keys:
+  jwt-private:
+  jwt-public:
+  session-revocations:
