@@ -6,13 +6,13 @@ import { createClient } from '@redis/client';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import pg from 'pg';
-import { readFileSync } from 'node:fs';
 import { createPrivateKey, createPublicKey, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import {
   browserConfig, JWT_ALGORITHM, JWT_AUDIENCE, JWT_ISSUER,
   SESSION_TTL_SECONDS, USERNAME_PATTERN,
 } from '../../shared/auth.js';
 import { createRevocations } from '../../shared/revocations.js';
+import { loadJwtKeyPem } from '../../shared/jwt-key.js';
 import { connectRevocationRedis } from '../../shared/connect-revocation-redis.js';
 import { revocationRedisUrl } from '../../shared/revocation-redis-config.js';
 import { createRedisRevocationWriter } from '../../shared/redis-revocations.js';
@@ -20,7 +20,7 @@ import { createSessionVerifier } from '../../shared/session.js';
 import { createLoginThrottle, createPasswordWorkQueue, PasswordWorkTimeoutError } from './password-work.js';
 
 const { origin, secure, sessionCookie, csrfCookie, cookieOptions } = browserConfig(process.env.PUBLIC_ORIGIN);
-const privateKey = createPrivateKey(readFileSync(process.env.JWT_PRIVATE_KEY));
+const privateKey = createPrivateKey(loadJwtKeyPem(process.env, 'JWT_PRIVATE_KEY'));
 if (privateKey.asymmetricKeyType !== 'rsa' || privateKey.asymmetricKeyDetails.modulusLength < 2048) {
   throw new Error('JWT_PRIVATE_KEY must contain an RSA private key of at least 2048 bits.');
 }

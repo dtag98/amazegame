@@ -1,8 +1,26 @@
 # Deploy Amaze Game on Render
 
-The Blueprint uses `amazegame` as the public nginx service so the existing `https://amazegame.onrender.com` address can stay in use. It connects to private auth and game services, the existing Render PostgreSQL database, and a private Valkey service with a persistent disk for logout records. Render terminates HTTPS and forwards requests to nginx.
+The public `amazegame` service runs nginx so the existing `https://amazegame.onrender.com` address can stay in use. It connects to private auth and game services. Auth uses the existing Render PostgreSQL database, and both private app services use Valkey to enforce logout. Render terminates HTTPS and forwards requests to nginx.
 
-## Prepare the existing services
+## Configure an existing Render project manually
+
+Use the same project, environment, and region as your existing web service and database. Use the repository root as the Docker build context and deploy all four services from the same branch. Keep the public service on its current configuration until the private services are ready.
+
+| Service | Render type | Dockerfile | Port |
+| --- | --- | --- | --- |
+| `amazegame-revocations-store` | Private Service | `deploy/Dockerfile.valkey` | `6379` |
+| `amazegame-auth` | Private Service | `server/auth/Dockerfile` | `3001` |
+| `amazegame-game` | Private Service | `Dockerfile` | `3002` |
+| `amazegame` | Existing Web Service | `nginx/Dockerfile.render` | `10000` |
+
+- Attach a persistent disk at `/data` on the Valkey service and set `REVOCATIONS_WRITER_PASSWORD` and `REVOCATIONS_READER_PASSWORD` to two distinct generated passwords. Use 32–128 characters from `A-Z`, `a-z`, `0-9`, `_+/=-`.
+- On auth and game, set `PORT` to the corresponding port above, `PUBLIC_ORIGIN` to `https://amazegame.onrender.com`, and `SESSION_REVOCATIONS_REDIS_HOSTPORT` to Valkey's Render internal `host:port`. Set `SESSION_REVOCATIONS_REDIS_PASSWORD` on auth to the writer password and on game to the reader password. Add the RSA keys as described below.
+- On auth, set `TRUST_NGINX=true`, `PGHOST` to the database's internal hostname, `PGDATABASE` to its database name, `PGUSER=amazegame_app`, and `PGPASSWORD` to the password set during database bootstrap.
+- At cutover, configure the public web service to use `nginx/Dockerfile.render`. Set `PORT=10000`, `RENDER_AUTH_HOSTPORT` and `RENDER_GAME_HOSTPORT` to the corresponding private service addresses, and the health check path to `/health`. Clear any previous Docker Command override so the nginx image runs its default command.
+
+The private services and Valkey disk are paid Render resources. [render.yaml](../render.yaml) documents the equivalent optional Blueprint settings.
+
+## Review Blueprint settings (optional)
 
 Check that the public service is named `amazegame`, the database is `amazegame-db`, and both are in Ohio in the same workspace. If your actual names or region differ, update those entries and references before applying the Blueprint. Verify that a service named `amazegame-auth`, if present, is a private service. Use a different name for the new private auth service if an existing public auth service uses that name.
 
@@ -34,8 +52,9 @@ openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:3072 -out "$keydir/jwt-p
 openssl pkey -in "$keydir/jwt-private.pem" -pubout -out "$keydir/jwt-public.pem"
 ```
 
-- On `amazegame-auth`, set `PGPASSWORD` to the app-role password and add the secret file `jwt-private.pem`.
-- On `amazegame-game`, add the matching `jwt-public.pem` as a secret file.
+For manual setup, paste the entire private PEM into `JWT_PRIVATE_KEY_PEM` on `amazegame-auth`, and paste the matching public PEM into `JWT_PUBLIC_KEY_PEM` on `amazegame-game`. Include the header, footer, and line breaks. Render's **Import from .env** option supports quoted multiline values if needed. Use each service's own **Environment** settings. The auth image skips local key generation when `JWT_PRIVATE_KEY_PEM` is set.
+
+The file-based setup is also supported. Add `jwt-private.pem` to auth's Secret Files and `jwt-public.pem` to the game's Secret Files. Set `JWT_PRIVATE_KEY=/etc/secrets/jwt-private.pem` on auth and `JWT_PUBLIC_KEY=/etc/secrets/jwt-public.pem` on game. Set the auth Docker Command to `node index.js` for the file-based setup. The Blueprint includes that command and both paths. If a service has both a PEM environment variable and a file path configured, it uses the PEM environment variable.
 
 Retain the same key pair across deploys. Render places secret files under `/etc/secrets`. The auth service starts directly with the configured private key, and the game checks JWTs locally using the public key. The private Valkey service stores logout records on its disk. Auth requires a journal sync before acknowledging logout, and the game refreshes an in-memory revocation snapshot independently of user requests.
 
@@ -43,7 +62,7 @@ For per-visitor rate limits, set `RENDER_TRUSTED_PROXY_CIDRS` on nginx to the co
 
 ## Cut over and verify
 
-Review [render.yaml](../render.yaml) before syncing it. If the class site is already in use, prepare the private services first in the Render Dashboard, or schedule a maintenance window for the sync. Render can deploy changes to an existing service when you sync its configuration even with commit-triggered auto-deploy off. Add the secrets, confirm the private services are healthy, then switch the public service to the nginx image. Existing sessions issued with the old shared secret will require a fresh sign-in. If you already deployed the earlier managed Key Value setup, rotate the RSA pair at cutover so tokens tied to the old revocation store are rejected.
+Add the secrets and confirm the private services are healthy before switching the public service to the nginx image. If using a Blueprint, review the plan before syncing it. Render can deploy changes to an existing service on Blueprint sync even with commit-triggered auto-deploy off. Existing sessions issued with the old shared secret will require a fresh sign-in. If you already deployed the earlier managed Key Value setup, rotate the RSA pair at cutover so tokens tied to the old revocation store are rejected.
 
 On the public URL, verify an HTTP redirect to HTTPS, username-only signup, sign-in, joining a room over WSS, and logout from a second tab. Restart the game service while a valid session is open and confirm that refreshing still shows the signed-in account. Run a class-size rehearsal on Render, including testers who share a school IP. Add the verified public URL to the project README.
 

@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict';
-import { createHash, generateKeyPairSync, randomUUID } from 'node:crypto';
+import { createHash, createPrivateKey, generateKeyPairSync, randomUUID } from 'node:crypto';
 import { createRequire } from 'node:module';
 import test from 'node:test';
 import { createSessionVerifier } from '../server/game/session.js';
+import { loadJwtKeyPem } from '../shared/jwt-key.js';
 
 const jwt = createRequire(new URL('../server/game/package.json', import.meta.url))('jsonwebtoken');
 const keys = generateKeyPairSync('rsa', { modulusLength: 2048 });
@@ -58,4 +59,13 @@ test('verifier requires the expected service and a valid account identity', () =
 test('verifier startup requires public key material', () => {
   const privatePem = keys.privateKey.export({ type: 'pkcs8', format: 'pem' });
   assert.throws(() => createSessionVerifier(privatePem, 'session'), /public key/);
+});
+
+test('environment-supplied RSA keys sign and verify a session', () => {
+  const signingEnv = { JWT_PRIVATE_KEY_PEM: keys.privateKey.export({ type: 'pkcs8', format: 'pem' }) };
+  const verificationEnv = { JWT_PUBLIC_KEY_PEM: publicPem };
+  const privateKey = createPrivateKey(loadJwtKeyPem(signingEnv, 'JWT_PRIVATE_KEY'));
+  const verifyEnvSession = createSessionVerifier(loadJwtKeyPem(verificationEnv, 'JWT_PUBLIC_KEY'), 'session');
+  const token = signed(claims, { privateKey });
+  assert.equal(verifyEnvSession(`session=${token}`)?.id, account.id);
 });

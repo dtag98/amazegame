@@ -1,13 +1,13 @@
 import express from 'express';
 import helmet from 'helmet';
 import { createClient } from '@redis/client';
-import { readFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { ClientState, createEndpoint, createRouter, defineServer, ServerError, Room, matchMaker } from '@colyseus/core';
 import { Schema, MapSchema, defineTypes } from '@colyseus/schema';
 import { WebSocketTransport } from '@colyseus/ws-transport';
 import { browserConfig, SESSION_ENDED_CLOSE_CODE } from '../../shared/auth.js';
 import { createRevocations } from '../../shared/revocations.js';
+import { loadJwtKeyPem } from '../../shared/jwt-key.js';
 import { connectRevocationRedis } from '../../shared/connect-revocation-redis.js';
 import { revocationRedisUrl } from '../../shared/revocation-redis-config.js';
 import { createRedisRevocationReader } from '../../shared/redis-revocations.js';
@@ -16,7 +16,7 @@ import { createSessionVerifier } from './session.js';
 
 const app = express();
 const { origin, secure, sessionCookie } = browserConfig(process.env.PUBLIC_ORIGIN);
-const verifySession = createSessionVerifier(readFileSync(process.env.JWT_PUBLIC_KEY, 'utf8'), sessionCookie);
+const verifySession = createSessionVerifier(loadJwtKeyPem(process.env, 'JWT_PUBLIC_KEY'), sessionCookie);
 const revocationsRedisUrl = revocationRedisUrl(process.env, 'reader');
 const redis = revocationsRedisUrl ? await connectRevocationRedis(createClient, revocationsRedisUrl) : null;
 const revocations = redis ? await createRedisRevocationReader(redis) : createRevocations(process.env.SESSION_REVOCATIONS_DIR);
