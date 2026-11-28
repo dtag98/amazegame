@@ -9,7 +9,6 @@ projects:
             region: ohio
             dockerfilePath: ./nginx/Dockerfile.render
             dockerContext: .
-            autoDeployTrigger: "off"
             healthCheckPath: /health
             envVars:
               - key: PORT
@@ -36,7 +35,6 @@ projects:
             dockerfilePath: ./server/auth/Dockerfile
             dockerContext: .
             dockerCommand: node index.js
-            autoDeployTrigger: "off"
             envVars:
               - key: PORT
                 value: "3001"
@@ -80,7 +78,6 @@ projects:
             numInstances: 1
             dockerfilePath: ./Dockerfile
             dockerContext: .
-            autoDeployTrigger: "off"
             envVars:
               - key: PORT
                 value: "3002"
@@ -110,7 +107,6 @@ projects:
             numInstances: 1
             dockerfilePath: ./deploy/Dockerfile.valkey
             dockerContext: .
-            autoDeployTrigger: "off"
             disk:
               name: revocation-data
               mountPath: /data
