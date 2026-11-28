@@ -53,6 +53,7 @@ export function ensureJwtKeys(privatePath, publicPath) {
   if (readIfPresent(publicPath) !== publicPem) publish(publicPath, publicPem, 0o644, true);
 }
 
+// Auth needs local key files only when deployment has supplied no signing PEM.
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href
     && process.env.JWT_PRIVATE_KEY_PEM === undefined) {
   const { JWT_PRIVATE_KEY, JWT_PUBLIC_KEY } = process.env;

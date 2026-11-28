@@ -61,7 +61,7 @@ test('verifier startup requires public key material', () => {
   assert.throws(() => createSessionVerifier(privatePem, 'session'), /public key/);
 });
 
-test('environment-supplied RSA keys sign and verify a session', () => {
+test('RSA keys from the environment sign and verify a session without key files', () => {
   const signingEnv = { JWT_PRIVATE_KEY_PEM: keys.privateKey.export({ type: 'pkcs8', format: 'pem' }) };
   const verificationEnv = { JWT_PUBLIC_KEY_PEM: publicPem };
   const privateKey = createPrivateKey(loadJwtKeyPem(signingEnv, 'JWT_PRIVATE_KEY'));

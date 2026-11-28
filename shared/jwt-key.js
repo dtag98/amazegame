@@ -8,10 +8,10 @@ export function loadJwtKeyPem(env, keyVariable) {
     return pem;
   }
 
-  const path = env[keyVariable];
-  if (!path) throw new Error(`Set ${pemVariable} to a PEM key or ${keyVariable} to a PEM file path.`);
+  const pemPath = env[keyVariable];
+  if (!pemPath) throw new Error(`Set ${pemVariable} to a PEM key or ${keyVariable} to a PEM file path.`);
   try {
-    return readFileSync(path, 'utf8');
+    return readFileSync(pemPath, 'utf8');
   } catch {
     throw new Error(`Could not read the PEM file configured by ${keyVariable}.`);
   }

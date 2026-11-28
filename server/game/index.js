@@ -16,7 +16,10 @@ import { createSessionVerifier } from './session.js';
 
 const app = express();
 const { origin, secure, sessionCookie } = browserConfig(process.env.PUBLIC_ORIGIN);
-const verifySession = createSessionVerifier(loadJwtKeyPem(process.env, 'JWT_PUBLIC_KEY'), sessionCookie);
+const verifySession = createSessionVerifier(
+  loadJwtKeyPem(process.env, 'JWT_PUBLIC_KEY'),
+  sessionCookie,
+);
 const revocationsRedisUrl = revocationRedisUrl(process.env, 'reader');
 const redis = revocationsRedisUrl ? await connectRevocationRedis(createClient, revocationsRedisUrl) : null;
 const revocations = redis ? await createRedisRevocationReader(redis) : createRevocations(process.env.SESSION_REVOCATIONS_DIR);

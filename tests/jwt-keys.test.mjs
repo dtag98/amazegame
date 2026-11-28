@@ -35,7 +35,7 @@ test('concurrent auth startup preserves one signing key and can restore its publ
   assert.equal(readFileSync(publicPath, 'utf8'), publicKey);
 });
 
-test('configuring the signing key in the environment skips the filesystem generator', async () => {
+test('an environment signing key skips local PEM generation', async () => {
   await run(process.execPath, [script], { env: { JWT_PRIVATE_KEY_PEM: 'validated by auth at startup' } });
 });
 

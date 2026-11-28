@@ -24,8 +24,8 @@ const privateKey = createPrivateKey(loadJwtKeyPem(process.env, 'JWT_PRIVATE_KEY'
 if (privateKey.asymmetricKeyType !== 'rsa' || privateKey.asymmetricKeyDetails.modulusLength < 2048) {
   throw new Error('JWT_PRIVATE_KEY must contain an RSA private key of at least 2048 bits.');
 }
-const publicPem = createPublicKey(privateKey).export({ type: 'spki', format: 'pem' });
-const verifySession = createSessionVerifier(publicPem, sessionCookie, jwt);
+const publicKeyPem = createPublicKey(privateKey).export({ type: 'spki', format: 'pem' });
+const verifySession = createSessionVerifier(publicKeyPem, sessionCookie, jwt);
 const revocationsRedisUrl = revocationRedisUrl(process.env, 'writer');
 let redis;
 let revocations;
