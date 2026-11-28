@@ -1,0 +1,2 @@
+nginx/validate-render.sh text eol=lf
+deploy/start-valkey.sh text eol=lf

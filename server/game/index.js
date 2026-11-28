@@ -1,5 +1,6 @@
 import express from 'express';
 import helmet from 'helmet';
+import { createClient } from '@redis/client';
 import { readFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { ClientState, createEndpoint, createRouter, defineServer, ServerError, Room, matchMaker } from '@colyseus/core';
@@ -7,13 +8,18 @@ import { Schema, MapSchema, defineTypes } from '@colyseus/schema';
 import { WebSocketTransport } from '@colyseus/ws-transport';
 import { browserConfig, SESSION_ENDED_CLOSE_CODE } from '../../shared/auth.js';
 import { createRevocations } from '../../shared/revocations.js';
+import { connectRevocationRedis } from '../../shared/connect-revocation-redis.js';
+import { revocationRedisUrl } from '../../shared/revocation-redis-config.js';
+import { createRedisRevocationReader } from '../../shared/redis-revocations.js';
 import { createGameAdmissions, GAME_LIMITS } from './admissions.js';
 import { createSessionVerifier } from './session.js';
 
 const app = express();
 const { origin, secure, sessionCookie } = browserConfig(process.env.PUBLIC_ORIGIN);
 const verifySession = createSessionVerifier(readFileSync(process.env.JWT_PUBLIC_KEY, 'utf8'), sessionCookie);
-const revocations = createRevocations(process.env.SESSION_REVOCATIONS_DIR);
+const revocationsRedisUrl = revocationRedisUrl(process.env, 'reader');
+const redis = revocationsRedisUrl ? await connectRevocationRedis(createClient, revocationsRedisUrl) : null;
+const revocations = redis ? await createRedisRevocationReader(redis) : createRevocations(process.env.SESSION_REVOCATIONS_DIR);
 const admissions = createGameAdmissions();
 const openRooms = new Set();
 const activeClients = new Set();
@@ -116,7 +122,12 @@ app.get('/me', (req, res) => {
   res.json({ user: { id: session.id, username: session.username } });
 });
 app.use(express.static('public', { index: 'index.html', maxAge: '1h', setHeaders(res, filePath) { if (filePath.endsWith('.html')) res.setHeader('Cache-Control', 'no-cache'); } }));
-app.get('/health', (_req, res) => res.json({ status: 'ok' }));
+app.get('/health', (_req, res) => {
+  if (revocations.isFresh && !revocations.isFresh()) {
+    return res.status(503).json({ status: 'unavailable' });
+  }
+  res.json({ status: 'ok' });
+});
 class Player extends Schema { constructor(id, username) { super(); this.id = id; this.username = username; this.x = 0; this.y = 0; this.z = 0; } }
 defineTypes(Player, { id: 'string', username: 'string', x: 'number', y: 'number', z: 'number' });
 class GameState extends Schema { constructor() { super(); this.players = new MapSchema(); } }
@@ -197,5 +208,8 @@ const gameServer = defineServer({
 const stopWatching = revocations.watch(() => {
   for (const client of activeClients) requireActiveSession(client);
 });
-gameServer.onShutdown(stopWatching);
+gameServer.onShutdown(() => {
+  stopWatching();
+  if (redis?.isOpen) redis.destroy();
+});
 gameServer.listen(Number(process.env.PORT ?? 3002));

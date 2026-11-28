@@ -1,1 +1,1 @@
-{"name":"amazegame-auth","version":"1.0.0","type":"module","scripts":{"start":"node index.js"},"dependencies":{"bcryptjs":"^3.0.3","cookie-parser":"^1.4.7","express":"^4.21.2","express-rate-limit":"^8.2.2","helmet":"^8.0.0","jsonwebtoken":"^9.0.2","pg":"^8.13.1"}}
+{"name":"amazegame-auth","version":"1.0.0","type":"module","scripts":{"start":"node index.js"},"dependencies":{"@redis/client":"5.12.4","bcryptjs":"^3.0.3","cookie-parser":"^1.4.7","express":"^4.21.2","express-rate-limit":"^8.2.2","helmet":"^8.0.0","jsonwebtoken":"^9.0.2","pg":"^8.13.1"}}

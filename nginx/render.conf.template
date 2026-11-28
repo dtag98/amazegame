@@ -1,0 +1,31 @@
+resolver ${NGINX_LOCAL_RESOLVERS} valid=5s ipv6=off;
+resolver_timeout 3s;
+
+upstream amazegame_auth {
+    zone amazegame_auth 64k;
+    server ${RENDER_AUTH_HOSTPORT} resolve;
+}
+
+upstream amazegame_game {
+    zone amazegame_game 64k;
+    server ${RENDER_GAME_HOSTPORT} resolve;
+}
+
+map $http_upgrade $connection_upgrade {
+    default upgrade;
+    '' close;
+}
+
+server {
+    listen ${PORT};
+    # Resolve right to left through the configured ingress hops. An empty
+    # include keeps the socket peer as the source address.
+    real_ip_header X-Forwarded-For;
+    real_ip_recursive on;
+    include /etc/nginx/render-trusted-proxies.conf;
+
+    # Render terminates HTTPS before forwarding requests to this service.
+    proxy_hide_header Strict-Transport-Security;
+    add_header Strict-Transport-Security "max-age=31536000" always;
+    include /etc/nginx/proxy-locations.conf;
+}

@@ -363,6 +363,16 @@ test('Objective 2 through local nginx, auth, game and PostgreSQL', {
   assert.equal((await previousSession.request('/me')).status, 401, 'the logged-out session cannot be reused');
   assert.equal((await matchmake(previousSession)).status, 401, 'a revoked session cannot obtain a new seat');
   await assertIdentity(otherBrowser, account.username);
+
+  assert.match(logout.headers.get('ratelimit') ?? '', /\blimit=60, remaining=59\b/);
+  const anonymous = browser(origin);
+  for (let attempt = 0; attempt <= 59; attempt++) {
+    const csrf = await anonymous.issueCsrf();
+    const response = await anonymous.request('/logout', { body: {}, csrf });
+    assert.equal(response.status, attempt < 59 ? 204 : 429, 'logout enforces its own per-IP budget');
+  }
+  await assertIdentity(otherBrowser, account.username);
+
   compose(['restart', 'game']);
   await waitForGame(guest);
   assert.equal((await previousSession.request('/me')).status, 401, 'session revocation survives game restart');

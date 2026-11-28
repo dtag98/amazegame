@@ -1,0 +1,11 @@
+FROM nginx:1.30.7-alpine-slim@sha256:8c950211a641ec5b23f265450517001f6bcca533666120ebe36cb4cff3d00a55
+
+ENV PORT=10000 \
+    NGINX_ENTRYPOINT_LOCAL_RESOLVERS=1 \
+    NGINX_ENVSUBST_FILTER="^(PORT|NGINX_LOCAL_RESOLVERS|RENDER_AUTH_HOSTPORT|RENDER_GAME_HOSTPORT)$"
+
+COPY nginx/proxy-locations.conf /etc/nginx/proxy-locations.conf
+COPY nginx/render.conf.template /etc/nginx/templates/default.conf.template
+COPY --chmod=755 nginx/validate-render.sh /docker-entrypoint.d/19-validate-render.sh
+
+EXPOSE 10000

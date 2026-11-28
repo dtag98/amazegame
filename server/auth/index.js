@@ -2,6 +2,7 @@ import express from 'express';
 import helmet from 'helmet';
 import cookieParser from 'cookie-parser';
 import rateLimit from 'express-rate-limit';
+import { createClient } from '@redis/client';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import pg from 'pg';
@@ -12,6 +13,9 @@ import {
   SESSION_TTL_SECONDS, USERNAME_PATTERN,
 } from '../../shared/auth.js';
 import { createRevocations } from '../../shared/revocations.js';
+import { connectRevocationRedis } from '../../shared/connect-revocation-redis.js';
+import { revocationRedisUrl } from '../../shared/revocation-redis-config.js';
+import { createRedisRevocationWriter } from '../../shared/redis-revocations.js';
 import { createSessionVerifier } from '../../shared/session.js';
 import { createLoginThrottle, createPasswordWorkQueue, PasswordWorkTimeoutError } from './password-work.js';
 
@@ -22,7 +26,9 @@ if (privateKey.asymmetricKeyType !== 'rsa' || privateKey.asymmetricKeyDetails.mo
 }
 const publicPem = createPublicKey(privateKey).export({ type: 'spki', format: 'pem' });
 const verifySession = createSessionVerifier(publicPem, sessionCookie, jwt);
-const revocations = createRevocations(process.env.SESSION_REVOCATIONS_DIR);
+const revocationsRedisUrl = revocationRedisUrl(process.env, 'writer');
+let redis;
+let revocations;
 const AUTH_REQUESTS_PER_IP_PER_ROUTE = 60;
 const passwordWork = createPasswordWorkQueue({ maxQueuedPerKind: AUTH_REQUESTS_PER_IP_PER_ROUTE });
 const loginThrottle = createLoginThrottle();
@@ -68,10 +74,10 @@ function retryLater(res, status = 503, retryAfter = 1) {
   return res.set('Retry-After', String(retryAfter)).status(status).json({ error });
 }
 
-function revokeCurrentSession(req, res) {
+async function revokeCurrentSession(req, res) {
   const session = verifySession(req.headers.cookie);
   try {
-    if (session) revocations.revoke(session);
+    if (session) await revocations.revoke(session);
     return true;
   } catch {
     console.error('Could not revoke the previous browser session');
@@ -149,7 +155,7 @@ app.post('/login', stateGuard, attemptLimit(AUTH_REQUESTS_PER_IP_PER_ROUTE), jso
       audience: JWT_AUDIENCE,
       jwtid: randomUUID(),
     });
-    if (!revokeCurrentSession(req, res)) return;
+    if (!(await revokeCurrentSession(req, res))) return;
     res.cookie(sessionCookie, token, { ...cookieOptions, maxAge: SESSION_TTL_SECONDS * 1000 });
     res.json({ user: { id: account.id, username: account.username } });
   } catch (error) {
@@ -161,8 +167,8 @@ app.post('/login', stateGuard, attemptLimit(AUTH_REQUESTS_PER_IP_PER_ROUTE), jso
   }
 });
 
-app.post('/logout', stateGuard, (req, res) => {
-  if (!revokeCurrentSession(req, res)) return;
+app.post('/logout', stateGuard, attemptLimit(AUTH_REQUESTS_PER_IP_PER_ROUTE), async (req, res) => {
+  if (!(await revokeCurrentSession(req, res))) return;
   res.clearCookie(sessionCookie, cookieOptions);
   res.clearCookie(csrfCookie, cookieOptions);
   res.status(204).end();
@@ -180,17 +186,20 @@ app.use((error, _req, res, _next) => {
 
 try {
   await pool.query('SELECT id FROM accounts LIMIT 1');
-  revocations.prune();
+  if (revocationsRedisUrl) redis = await connectRevocationRedis(createClient, revocationsRedisUrl);
+  revocations = redis ? await createRedisRevocationWriter(redis) : createRevocations(process.env.SESSION_REVOCATIONS_DIR);
+  await revocations.prune();
   app.listen(Number(process.env.PORT ?? 3001), '0.0.0.0');
-  setInterval(() => {
+  setInterval(async () => {
     try {
-      revocations.prune();
+      await revocations.prune();
     } catch {
       console.error('Could not prune expired session revocations');
     }
   }, 60_000).unref();
 } catch {
   console.error('Authentication service could not initialize its database or session state');
+  if (redis?.isOpen) redis.destroy();
   await pool.end();
   process.exitCode = 1;
 }

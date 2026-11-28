@@ -1,0 +1,6 @@
+FROM valkey/valkey:8-alpine@sha256:9971099af41c36e887aabdfe22b80c0fe45df949163dfc9cb434febc57cfc3fc
+
+COPY --chmod=755 deploy/start-valkey.sh /usr/local/bin/amazegame-valkey
+
+EXPOSE 6379
+ENTRYPOINT ["/usr/local/bin/amazegame-valkey"]

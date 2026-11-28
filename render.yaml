@@ -1,0 +1,131 @@
+projects:
+  - name: Amaze Game
+    environments:
+      - name: Production
+        services:
+          - type: web
+            name: amazegame
+            runtime: docker
+            region: ohio
+            dockerfilePath: ./nginx/Dockerfile.render
+            dockerContext: .
+            autoDeployTrigger: "off"
+            healthCheckPath: /health
+            envVars:
+              - key: PORT
+                value: "10000"
+              - key: RENDER_TRUSTED_PROXY_CIDRS
+                sync: false
+              - key: RENDER_AUTH_HOSTPORT
+                fromService:
+                  name: amazegame-auth
+                  type: pserv
+                  property: hostport
+              - key: RENDER_GAME_HOSTPORT
+                fromService:
+                  name: amazegame-game
+                  type: pserv
+                  property: hostport
+
+          - type: pserv
+            name: amazegame-auth
+            runtime: docker
+            region: ohio
+            plan: 1c-2g
+            numInstances: 1
+            dockerfilePath: ./server/auth/Dockerfile
+            dockerContext: .
+            dockerCommand: node index.js
+            autoDeployTrigger: "off"
+            envVars:
+              - key: PORT
+                value: "3001"
+              - key: TRUST_NGINX
+                value: "true"
+              - key: PUBLIC_ORIGIN
+                fromService:
+                  name: amazegame
+                  type: web
+                  envVarKey: RENDER_EXTERNAL_URL
+              - key: JWT_PRIVATE_KEY
+                value: /etc/secrets/jwt-private.pem
+              - key: PGHOST
+                fromDatabase:
+                  name: amazegame-db
+                  property: host
+              - key: PGDATABASE
+                fromDatabase:
+                  name: amazegame-db
+                  property: database
+              - key: PGUSER
+                value: amazegame_app
+              - key: PGPASSWORD
+                sync: false
+              - key: SESSION_REVOCATIONS_REDIS_HOSTPORT
+                fromService:
+                  name: amazegame-revocations-store
+                  type: pserv
+                  property: hostport
+              - key: SESSION_REVOCATIONS_REDIS_PASSWORD
+                fromService:
+                  name: amazegame-revocations-store
+                  type: pserv
+                  envVarKey: REVOCATIONS_WRITER_PASSWORD
+
+          - type: pserv
+            name: amazegame-game
+            runtime: docker
+            region: ohio
+            plan: 0.5c-512mb
+            numInstances: 1
+            dockerfilePath: ./Dockerfile
+            dockerContext: .
+            autoDeployTrigger: "off"
+            envVars:
+              - key: PORT
+                value: "3002"
+              - key: PUBLIC_ORIGIN
+                fromService:
+                  name: amazegame
+                  type: web
+                  envVarKey: RENDER_EXTERNAL_URL
+              - key: JWT_PUBLIC_KEY
+                value: /etc/secrets/jwt-public.pem
+              - key: SESSION_REVOCATIONS_REDIS_HOSTPORT
+                fromService:
+                  name: amazegame-revocations-store
+                  type: pserv
+                  property: hostport
+              - key: SESSION_REVOCATIONS_REDIS_PASSWORD
+                fromService:
+                  name: amazegame-revocations-store
+                  type: pserv
+                  envVarKey: REVOCATIONS_READER_PASSWORD
+
+          - type: pserv
+            name: amazegame-revocations-store
+            runtime: docker
+            region: ohio
+            plan: 0.5c-512mb
+            numInstances: 1
+            dockerfilePath: ./deploy/Dockerfile.valkey
+            dockerContext: .
+            autoDeployTrigger: "off"
+            disk:
+              name: revocation-data
+              mountPath: /data
+              sizeGB: 1
+            envVars:
+              - key: PORT
+                value: "6379"
+              - key: REVOCATIONS_WRITER_PASSWORD
+                generateValue: true
+              - key: REVOCATIONS_READER_PASSWORD
+                generateValue: true
+
+        databases:
+          - name: amazegame-db
+            databaseName: amazegame
+            user: amazegame
+            region: ohio
+            ipAllowList: []
